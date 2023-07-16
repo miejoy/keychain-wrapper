@@ -355,6 +355,21 @@ public class KeychainWrapper {
         return status == errSecSuccess ? reslut as? Data : nil
     }
     
+    /// 获取对于 key 的数据的引用
+    public func dataRef(for key: String) -> Data? {
+        
+        // 先要检查是否存在
+        var dicQuery = self.dicQuery
+        dicQuery[kSecAttrGeneric as String] = key
+        dicQuery[kSecReturnPersistentRef as String] = kCFBooleanTrue
+        dicQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+        
+        var reslut : AnyObject?
+        let status = SecItemCopyMatching(dicQuery as CFDictionary, &reslut)
+        
+        return status == errSecSuccess ? reslut as? Data : nil
+    }
+    
     // MARK: -Delete
     /// 删除对应 key 的数据
     ///
