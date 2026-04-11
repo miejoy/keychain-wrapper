@@ -6,56 +6,96 @@
 //
 
 import Foundation
-import Combine
 import LocalAuthentication
 
-public class KeychainWrapper {
+/// Keychain 数据存储包装器
+///
+/// 提供类型安全的 Keychain 存取接口，支持字符串、数值、可编解码对象以及账号密码管理。
+/// 通过配置 `accessGroup` 可实现跨 App 共享数据。
+///
+/// ## 基本用法
+///
+/// ```swift
+/// // 配置默认实例
+/// KeychainWrapper.configDefault(with: "com.myapp", accessGroup: nil)
+///
+/// // 存取字符串
+/// KeychainWrapper.set("secret_token", for: "accessToken")
+/// let token = KeychainWrapper.string(for: "accessToken")
+///
+/// // 存取对象
+/// KeychainWrapper.set(user, for: "currentUser")
+/// let savedUser: User? = KeychainWrapper.object(for: "currentUser", as: User.self)
+/// ```
+public final class KeychainWrapper: @unchecked Sendable {
     
-    static var _default: KeychainWrapper? = nil
-    
-    public static var `default`: KeychainWrapper {
-        guard let theDefault = _default else {
-            fatalError("You need call configDefault(with:accessGroup:accountKey:) first")
-        }
-        return theDefault
-    }
-            
     /// 服务名称，一般为 bundleIdentifier
-    var serviceName: String
+    let serviceName: String
     /// 授权组，用于实现多APP共享，由 teamId+GroupId 组成
-    var accessGroup: String?
-    var dicQuery: [String:Any]
-    var accountKey: String
-    var jsonEncoder: JSONEncoder = JSONEncoder()
-    var jsonDecoder: JSONDecoder = JSONDecoder()
+    let accessGroup: String?
+    let dicQuery: [String:Any]
+    let accountKey: String
+    let jsonEncoder: JSONEncoder
+    let jsonDecoder: JSONDecoder
     
-    /// 设置默认钥匙串包装器，设置后可直接使用静态方法调用
+    // MARK: - Static Default Instance
+    
+    /// 默认实例（线程安全存储）
+    nonisolated(unsafe) private static var _default: KeychainWrapper?
+    
+    /// 获取默认实例
+    ///
+    /// 使用前必须先调用 `configDefault(with:accessGroup:accountKey:)` 进行配置。
+    public static var `default`: KeychainWrapper {
+        DispatchQueue.syncOnKeychainQueue {
+            guard let theDefault = _default else {
+                fatalError("You need call configDefault(with:accessGroup:accountKey:) first")
+            }
+            return theDefault
+        }
+    }
+    
+    /// 配置默认钥匙串包装器，设置后可直接使用静态方法调用
     ///
     /// - Parameters:
     ///   - serviceName: 要连接的服务名，相当于数据库名，一般用 bundleId
-    ///   - accessGroup: 共享组 ID，访问跨 App 共享数据必备，一般为 teamId + groupId，
+    ///   - accessGroup: 共享组 ID，访问跨 App 共享数据必备，一般为 teamId + groupId
     ///   - accountKey: 保存账户数据用的 key，如果不使用 account 方法可以不设置，默认是 AccountList
+    ///   - jsonEncoder: JSON 编码器，默认使用 JSONEncoder()
+    ///   - jsonDecoder: JSON 解码器，默认使用 JSONDecoder()
     public static func configDefault(with serviceName: String,
                                      accessGroup: String?,
-                                     accountKey: String = "AccountList") {
-        if _default != nil {
-            print("Config defualt KeychainWrapper twice")
+                                     accountKey: String = "AccountList",
+                                     jsonEncoder: JSONEncoder = JSONEncoder(),
+                                     jsonDecoder: JSONDecoder = JSONDecoder()) {
+        DispatchQueue.syncOnKeychainQueue {
+            if _default != nil {
+                print("Config default KeychainWrapper twice")
+            }
+            _default = .init(with: serviceName, accessGroup: accessGroup, accountKey: accountKey, jsonEncoder: jsonEncoder, jsonDecoder: jsonDecoder)
         }
-        _default = .init(with: serviceName, accessGroup: accessGroup, accountKey: accountKey)
     }
+    
+    // MARK: - Init
     
     /// 初始化一个钥匙串包装器
     ///
     /// - Parameters:
     ///   - serviceName: 要连接的服务名，相当于数据库名，一般用 bundleId
-    ///   - accessGroup: 共享组 ID，访问跨 App 共享数据必备，一般为 teamId + groupId，
+    ///   - accessGroup: 共享组 ID，访问跨 App 共享数据必备，一般为 teamId + groupId
     ///   - accountKey: 保存账户数据用的 key，如果不使用 account 方法可以不设置，默认是 AccountList
+    ///   - jsonEncoder: JSON 编码器，默认使用 JSONEncoder()
+    ///   - jsonDecoder: JSON 解码器，默认使用 JSONDecoder()
     public init(with serviceName: String,
                 accessGroup: String? = nil,
-                accountKey: String = "AccountList") {
+                accountKey: String = "AccountList",
+                jsonEncoder: JSONEncoder = JSONEncoder(),
+                jsonDecoder: JSONDecoder = JSONDecoder()) {
         self.serviceName = serviceName
         self.accessGroup = accessGroup
         self.accountKey = accountKey
+        self.jsonEncoder = jsonEncoder
+        self.jsonDecoder = jsonDecoder
         var dic : [String:Any] = [
             kSecClass as String         : kSecClassGenericPassword,
             kSecAttrService as String   : self.serviceName
@@ -64,21 +104,6 @@ public class KeychainWrapper {
             dic[kSecAttrAccessGroup as String] = accessGroup
         }
         self.dicQuery = dic
-    }
-    
-    /// 设置钥匙串请求参数
-    ///
-    /// - Parameters:
-    ///   - dicQuery: 钥匙串请求参数
-    public func setQueryDic(_ dicQuery: [String:Any]) {
-        self.dicQuery = dicQuery
-    }
-    
-    /// 设置钥匙串存储数据的编解码器
-    public func setDataCoder(encoder: JSONEncoder,
-                             decoder: JSONDecoder) {
-        self.jsonEncoder = encoder
-        self.jsonDecoder = decoder
     }
     
     // MARK: - Public
@@ -287,7 +312,6 @@ public class KeychainWrapper {
     /// 设置
     @discardableResult
     public func set(_ value: Data, for key: String) -> Bool {
-        
         // 先要检查是否存在
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = key
@@ -342,7 +366,6 @@ public class KeychainWrapper {
     
     /// 获取对于 key 的数据
     public func data(for key: String) -> Data? {
-        
         // 先要检查是否存在
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = key
@@ -357,7 +380,6 @@ public class KeychainWrapper {
     
     /// 获取对于 key 的数据的引用
     public func dataRef(for key: String) -> Data? {
-        
         // 先要检查是否存在
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = key
@@ -386,7 +408,6 @@ public class KeychainWrapper {
     
     /// 清空数据
     public func wipeAll() -> Bool {
-        
         let status = SecItemDelete(self.dicQuery as CFDictionary)
         
         return (status == errSecSuccess)
@@ -403,17 +424,11 @@ public class KeychainWrapper {
     ///   - encryptKey: 密码加密字符串
     /// - Returns: 如果成功返回 true
     public func add(account: String, with password: String, encryptKey: String?) -> Bool {
-        
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = self.accountKey
         dicQuery[kSecAttrAccount as String] = account
         
         self.assemble(query: &dicQuery, with: encryptKey)
-        
-//        var query = dicQuery
-//        query[kSecReturnData as String] = kCFBooleanTrue
-//        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        
         
         // 判断是否存在
         let value = password.data(using: .utf8)
@@ -426,21 +441,6 @@ public class KeychainWrapper {
             status = SecItemUpdate(dicQuery as CFDictionary, update as CFDictionary)
         }
         return status == errSecSuccess
-//
-//        var reslut : AnyObject?
-//        let status = SecItemCopyMatching(query as CFDictionary, &reslut)
-//        var resultStatus : OSStatus
-//        if status == errSecSuccess, let _ = reslut as? Data {
-//            // 有老数据，需要更新
-//            let update = [kSecValueData as String : password.data(using: .utf8)]
-//            resultStatus = SecItemUpdate(dicQuery as CFDictionary, update as CFDictionary)
-//        } else {
-//            // 添加
-//            dicQuery[kSecValueData as String] = password.data(using: .utf8)
-//            resultStatus = SecItemAdd(dicQuery as CFDictionary, nil)
-//        }
-//
-//        return resultStatus == errSecSuccess
     }
     
     /// 获取账号列表
@@ -448,7 +448,6 @@ public class KeychainWrapper {
     /// - Parameter encryptKey: 密码加密字符串
     /// - Returns: 返回包含账号的列表
     public func accountList(encryptKey: String?) -> [String] {
-        
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = self.accountKey
         dicQuery[kSecReturnData as String] = kCFBooleanTrue
@@ -477,7 +476,6 @@ public class KeychainWrapper {
 
     /// 获取保存的账号密码
     public func password(for account: String, encryptKey: String?) -> String? {
-        
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = self.accountKey
         dicQuery[kSecAttrAccount as String] = account
@@ -497,7 +495,6 @@ public class KeychainWrapper {
     
     /// 删除对应账号
     public func delete(account: String) -> Bool {
-        
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = self.accountKey
         dicQuery[kSecAttrAccount as String] = account
@@ -509,7 +506,6 @@ public class KeychainWrapper {
     
     /// 清空所有账号
     public func wipeAccounts() -> Bool {
-        
         var dicQuery = self.dicQuery
         dicQuery[kSecAttrGeneric as String] = self.accountKey
         
@@ -533,6 +529,27 @@ public class KeychainWrapper {
             query[kSecUseAuthenticationContext as String] = context
         }
         
+    }
+}
+
+// MARK: - Keychain Queue
+
+extension DispatchQueue {
+    static let keychainQueueDispatchSpecificKey: DispatchSpecificKey<String> = .init()
+    
+    /// keychain 队列使用的锁
+    static let keychainQueue: DispatchQueue = {
+        let queue = DispatchQueue(label: "com.miejoy.keychain_queue")
+        queue.setSpecific(key: keychainQueueDispatchSpecificKey, value: queue.label)
+        return queue
+    }()
+    
+    /// 在 keychain 队列中执行
+    static func syncOnKeychainQueue<T>(execute work: () throws -> T) rethrows -> T {
+        if DispatchQueue.getSpecific(key: Self.keychainQueueDispatchSpecificKey) == Self.keychainQueue.label {
+            return try work()
+        }
+        return try Self.keychainQueue.sync(execute: work)
     }
 }
 
