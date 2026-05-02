@@ -27,13 +27,14 @@ import LocalAuthentication
 /// KeychainWrapper.set(user, for: "currentUser")
 /// let savedUser: User? = KeychainWrapper.object(for: "currentUser", as: User.self)
 /// ```
-public final class KeychainWrapper: @unchecked Sendable {
+public final class KeychainWrapper: Sendable {
     
     /// 服务名称，一般为 bundleIdentifier
     let serviceName: String
+    /// 服务名称，一般为 bundleIdentifier
+    let accountServiceName: String
     /// 授权组，用于实现多APP共享，由 teamId+GroupId 组成
     let accessGroup: String?
-    let dicQuery: [String:Any]
     let accountKey: String
     let jsonEncoder: JSONEncoder
     let jsonDecoder: JSONDecoder
@@ -41,7 +42,7 @@ public final class KeychainWrapper: @unchecked Sendable {
     // MARK: - Static Default Instance
     
     /// 默认实例（线程安全存储）
-    nonisolated(unsafe) private static var _default: KeychainWrapper?
+    nonisolated(unsafe) static var _default: KeychainWrapper?
     
     /// 获取默认实例
     ///
@@ -60,12 +61,12 @@ public final class KeychainWrapper: @unchecked Sendable {
     /// - Parameters:
     ///   - serviceName: 要连接的服务名，相当于数据库名，一般用 bundleId
     ///   - accessGroup: 共享组 ID，访问跨 App 共享数据必备，一般为 teamId + groupId
-    ///   - accountKey: 保存账户数据用的 key，如果不使用 account 方法可以不设置，默认是 AccountList
+    ///   - accountKey: 保存账户数据用的 服务名后缀，如果不使用 account 方法可以不设置，默认是 .accounts
     ///   - jsonEncoder: JSON 编码器，默认使用 JSONEncoder()
     ///   - jsonDecoder: JSON 解码器，默认使用 JSONDecoder()
     public static func configDefault(with serviceName: String,
                                      accessGroup: String?,
-                                     accountKey: String = "AccountList",
+                                     accountKey: String = ".accounts",
                                      jsonEncoder: JSONEncoder = JSONEncoder(),
                                      jsonDecoder: JSONDecoder = JSONDecoder()) {
         DispatchQueue.syncOnKeychainQueue {
@@ -83,27 +84,44 @@ public final class KeychainWrapper: @unchecked Sendable {
     /// - Parameters:
     ///   - serviceName: 要连接的服务名，相当于数据库名，一般用 bundleId
     ///   - accessGroup: 共享组 ID，访问跨 App 共享数据必备，一般为 teamId + groupId
-    ///   - accountKey: 保存账户数据用的 key，如果不使用 account 方法可以不设置，默认是 AccountList
+    ///   - accountKey: 保存账户数据用的 服务名后缀，如果不使用 account 方法可以不设置，默认是 .accounts
     ///   - jsonEncoder: JSON 编码器，默认使用 JSONEncoder()
     ///   - jsonDecoder: JSON 解码器，默认使用 JSONDecoder()
     public init(with serviceName: String,
                 accessGroup: String? = nil,
-                accountKey: String = "AccountList",
+                accountKey: String = ".accounts",
                 jsonEncoder: JSONEncoder = JSONEncoder(),
                 jsonDecoder: JSONDecoder = JSONDecoder()) {
         self.serviceName = serviceName
+        self.accountServiceName = serviceName + accountKey
         self.accessGroup = accessGroup
         self.accountKey = accountKey
         self.jsonEncoder = jsonEncoder
         self.jsonDecoder = jsonDecoder
-        var dic : [String:Any] = [
-            kSecClass as String         : kSecClassGenericPassword,
-            kSecAttrService as String   : self.serviceName
+    }
+    
+    /// 构建基础查询字典
+    private func makeBaseQuery() -> [String: Any] {
+        var dic: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: self.serviceName
         ]
         if let accessGroup = self.accessGroup {
             dic[kSecAttrAccessGroup as String] = accessGroup
         }
-        self.dicQuery = dic
+        return dic
+    }
+    
+    /// 构建基础查询字典
+    private func makeAccountQuery() -> [String: Any] {
+        var dic: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: self.accountServiceName
+        ]
+        if let accessGroup = self.accessGroup {
+            dic[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return dic
     }
     
     // MARK: - Public
@@ -208,12 +226,22 @@ public final class KeychainWrapper: @unchecked Sendable {
     
     /// 清空所有 keychain 保存数据
     ///
-    /// - Warning: 该方法会清空当前 serviceName 下所有保存数据，包括 账号数据
+    /// - Warning: 该方法会清空当前 serviceName 和  accountServiceName下所有保存数据，包括 账号数据
     /// - Returns: 如果成功返回 true
     @discardableResult
     @inlinable
     public static func wipeAll() -> Bool {
         return self.default.wipeAll()
+    }
+    
+    /// 清空 keychain 保存所有数据
+    ///
+    /// - Warning: 该方法会清空当前 serviceName 下所有保存数据
+    /// - Returns: 如果成功返回 true
+    @discardableResult
+    @inlinable
+    public static func wipeDatas() -> Bool {
+        return self.default.wipeDatas()
     }
     
     // MARK: - Public Account
@@ -313,18 +341,20 @@ public final class KeychainWrapper: @unchecked Sendable {
     @discardableResult
     public func set(_ value: Data, for key: String) -> Bool {
         // 先要检查是否存在
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = key
-        
-        var dicAdd = dicQuery
-        dicAdd[kSecValueData as String] = value
-        var status = SecItemAdd(dicAdd as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            // 更新
-            let update = [kSecValueData as String : value]
-            status = SecItemUpdate(dicQuery as CFDictionary, update as CFDictionary)
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeBaseQuery()
+            dicQuery[kSecAttrAccount as String] = key
+            
+            var dicAdd = dicQuery
+            dicAdd[kSecValueData as String] = value
+            var status = SecItemAdd(dicAdd as CFDictionary, nil)
+            if status == errSecDuplicateItem {
+                // 更新
+                let update = [kSecValueData as String : value]
+                status = SecItemUpdate(dicQuery as CFDictionary, update as CFDictionary)
+            }
+            return status == errSecSuccess
         }
-        return status == errSecSuccess
     }
     
     // MARK: -Get
@@ -367,29 +397,33 @@ public final class KeychainWrapper: @unchecked Sendable {
     /// 获取对于 key 的数据
     public func data(for key: String) -> Data? {
         // 先要检查是否存在
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = key
-        dicQuery[kSecReturnData as String] = kCFBooleanTrue
-        dicQuery[kSecMatchLimit as String] = kSecMatchLimitOne
-        
-        var reslut : AnyObject?
-        let status = SecItemCopyMatching(dicQuery as CFDictionary, &reslut)
-        
-        return status == errSecSuccess ? reslut as? Data : nil
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeBaseQuery()
+            dicQuery[kSecAttrAccount as String] = key
+            dicQuery[kSecReturnData as String] = kCFBooleanTrue
+            dicQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+            
+            var reslut : AnyObject?
+            let status = SecItemCopyMatching(dicQuery as CFDictionary, &reslut)
+            
+            return status == errSecSuccess ? reslut as? Data : nil
+        }
     }
     
     /// 获取对于 key 的数据的引用
     public func dataRef(for key: String) -> Data? {
         // 先要检查是否存在
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = key
-        dicQuery[kSecReturnPersistentRef as String] = kCFBooleanTrue
-        dicQuery[kSecMatchLimit as String] = kSecMatchLimitOne
-        
-        var reslut : AnyObject?
-        let status = SecItemCopyMatching(dicQuery as CFDictionary, &reslut)
-        
-        return status == errSecSuccess ? reslut as? Data : nil
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeBaseQuery()
+            dicQuery[kSecAttrAccount as String] = key
+            dicQuery[kSecReturnPersistentRef as String] = kCFBooleanTrue
+            dicQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+            
+            var reslut : AnyObject?
+            let status = SecItemCopyMatching(dicQuery as CFDictionary, &reslut)
+            
+            return status == errSecSuccess ? reslut as? Data : nil
+        }
     }
     
     // MARK: -Delete
@@ -398,19 +432,31 @@ public final class KeychainWrapper: @unchecked Sendable {
     /// - Parameter key: 要删除数据对应的 key
     /// - Returns: 如果删除成功返回 true
     public func delete(valueFor key: String) -> Bool {
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = key
-        
-        let status = SecItemDelete(dicQuery as CFDictionary)
-        
-        return (status == errSecSuccess)
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeBaseQuery()
+            dicQuery[kSecAttrAccount as String] = key
+            
+            let status = SecItemDelete(dicQuery as CFDictionary)
+            
+            return (status == errSecSuccess)
+        }
+    }
+    
+    /// 清空所有数据
+    @discardableResult
+    public func wipeAll() -> Bool {
+        return wipeDatas() && wipeAccounts()
     }
     
     /// 清空数据
-    public func wipeAll() -> Bool {
-        let status = SecItemDelete(self.dicQuery as CFDictionary)
-        
-        return (status == errSecSuccess)
+    @discardableResult
+    public func wipeDatas() -> Bool {
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeBaseQuery()
+            dicQuery[kSecMatchLimit as String] = kSecMatchLimitAll
+            let status = SecItemDelete(dicQuery as CFDictionary)
+            return (status == errSecSuccess || status == errSecItemNotFound)
+        }
     }
     
     
@@ -424,23 +470,24 @@ public final class KeychainWrapper: @unchecked Sendable {
     ///   - encryptKey: 密码加密字符串
     /// - Returns: 如果成功返回 true
     public func add(account: String, with password: String, encryptKey: String?) -> Bool {
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = self.accountKey
-        dicQuery[kSecAttrAccount as String] = account
-        
-        self.assemble(query: &dicQuery, with: encryptKey)
-        
-        // 判断是否存在
-        let value = password.data(using: .utf8)
-        var dicAdd = dicQuery
-        dicAdd[kSecValueData as String] = value
-        var status = SecItemAdd(dicAdd as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            // 更新
-            let update = [kSecValueData as String : value]
-            status = SecItemUpdate(dicQuery as CFDictionary, update as CFDictionary)
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeAccountQuery()
+            dicQuery[kSecAttrAccount as String] = account
+            
+            self.assemble(query: &dicQuery, with: encryptKey)
+            
+            // 判断是否存在
+            let value = password.data(using: .utf8)
+            var dicAdd = dicQuery
+            dicAdd[kSecValueData as String] = value
+            var status = SecItemAdd(dicAdd as CFDictionary, nil)
+            if status == errSecDuplicateItem {
+                // 更新
+                let update = [kSecValueData as String : value]
+                status = SecItemUpdate(dicQuery as CFDictionary, update as CFDictionary)
+            }
+            return status == errSecSuccess
         }
-        return status == errSecSuccess
     }
     
     /// 获取账号列表
@@ -448,70 +495,74 @@ public final class KeychainWrapper: @unchecked Sendable {
     /// - Parameter encryptKey: 密码加密字符串
     /// - Returns: 返回包含账号的列表
     public func accountList(encryptKey: String?) -> [String] {
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = self.accountKey
-        dicQuery[kSecReturnData as String] = kCFBooleanTrue
-        dicQuery[kSecReturnAttributes as String] = kCFBooleanTrue
-        dicQuery[kSecMatchLimit as String] = kSecMatchLimitAll
-        
-        self.assemble(query: &dicQuery, with: encryptKey)
-        
-        var results: AnyObject?
-        let status = SecItemCopyMatching(dicQuery as CFDictionary, &results)
-        
-        guard status == errSecSuccess else { return [] }
-        
-        var arr = [String]()
-        
-        if let results = results as? [[String: AnyObject]] {
-            arr = results.reduce(into: [String]()) { (result, attr) in
-                if let account = attr[kSecAttrAccount as String] as? String{
-                    result.append(account)
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeAccountQuery()
+            dicQuery[kSecReturnAttributes as String] = kCFBooleanTrue
+            dicQuery[kSecMatchLimit as String] = kSecMatchLimitAll
+            
+            self.assemble(query: &dicQuery, with: encryptKey)
+            
+            var results: AnyObject?
+            let status = SecItemCopyMatching(dicQuery as CFDictionary, &results)
+            
+            guard status == errSecSuccess else { return [] }
+            
+            var arr = [String]()
+            
+            if let results = results as? [[String: AnyObject]] {
+                arr = results.reduce(into: [String]()) { (result, attr) in
+                    if let account = attr[kSecAttrAccount as String] as? String{
+                        result.append(account)
+                    }
                 }
             }
+            
+            return arr
         }
-        
-        return arr
     }
 
     /// 获取保存的账号密码
     public func password(for account: String, encryptKey: String?) -> String? {
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = self.accountKey
-        dicQuery[kSecAttrAccount as String] = account
-        dicQuery[kSecReturnData as String] = kCFBooleanTrue
-        dicQuery[kSecMatchLimit as String] = kSecMatchLimitOne
-        
-        self.assemble(query: &dicQuery, with: encryptKey)
-        
-        // 判断是否存在
-        var reslut : AnyObject?
-        let status = SecItemCopyMatching(dicQuery as CFDictionary, &reslut)
-        if status == errSecSuccess, let data = reslut as? Data {
-            return String(data: data, encoding: .utf8)
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeAccountQuery()
+            dicQuery[kSecAttrAccount as String] = account
+            dicQuery[kSecReturnData as String] = kCFBooleanTrue
+            dicQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+            
+            self.assemble(query: &dicQuery, with: encryptKey)
+            
+            // 判断是否存在
+            var reslut : AnyObject?
+            let status = SecItemCopyMatching(dicQuery as CFDictionary, &reslut)
+            if status == errSecSuccess, let data = reslut as? Data {
+                return String(data: data, encoding: .utf8)
+            }
+            return nil
         }
-        return nil
     }
     
     /// 删除对应账号
     public func delete(account: String) -> Bool {
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = self.accountKey
-        dicQuery[kSecAttrAccount as String] = account
-        
-        let status = SecItemDelete(dicQuery as CFDictionary)
-        
-        return status == errSecSuccess
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeAccountQuery()
+            dicQuery[kSecAttrAccount as String] = account
+            
+            let status = SecItemDelete(dicQuery as CFDictionary)
+            
+            return (status == errSecSuccess || status == errSecItemNotFound)
+        }
     }
     
     /// 清空所有账号
+    @discardableResult
     public func wipeAccounts() -> Bool {
-        var dicQuery = self.dicQuery
-        dicQuery[kSecAttrGeneric as String] = self.accountKey
-        
-        let status = SecItemDelete(dicQuery as CFDictionary)
-        
-        return (status == errSecSuccess)
+        return DispatchQueue.syncOnKeychainQueue {
+            var dicQuery = self.makeAccountQuery()
+            dicQuery[kSecMatchLimit as String] = kSecMatchLimitAll
+            let status = SecItemDelete(dicQuery as CFDictionary)
+            
+            return (status == errSecSuccess || status == errSecItemNotFound)
+        }
     }
     
     /// 用加密字符串组装请求
@@ -559,8 +610,7 @@ extension DispatchQueue {
  kSecAttrService        相当于连接了哪个数据库，一般使用包名
  kSecAttrAccessGroup    相当于连接了哪个共享数据库，设置这个应该会忽略 kSecAttrService
  
- kSecAttrGeneric        通用属性，这里我们用它来作为 Key
- kSecAttrAccount        账号属性，这里我们在保存账号密码是作为 Acount
+ kSecAttrAccount        账号属性，这里我们在保存数据key或账号
  kSecValueData          保存的值，这里在保存账号时作为 Password ，其他情况作为 Value
  kSecAttrAccessible     访问权限，默认使用 kSecAttrAccessibleWhenUnlocked
  kSecUseAuthenticationContext   用于账号密码保存的授权设置 LAContext().setCredential(data, type: .applicationPassword)

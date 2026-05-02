@@ -16,7 +16,8 @@ KeychainWrapper 是一个类型安全的 Keychain 存取包装器，支持字符
 - 支持字符串、数值、可编解码对象
 - 账号密码管理，支持加密存储
 - 通过 `accessGroup` 实现跨 App 共享数据
-- 线程安全的静态实例配置
+- 全面的线程安全保护，所有读写操作通过串行队列串行化
+- 符合 `Sendable` 协议，可安全跨 Actor 传递
 
 ## 安装
 
@@ -65,7 +66,10 @@ let user: User? = KeychainWrapper.object(for: "currentUser", as: User.self)
 // 删除
 KeychainWrapper.delete(valueFor: "accessToken")
 
-// 清空所有数据
+// 清空所有普通数据（不包含账号数据）
+KeychainWrapper.wipeDatas()
+
+// 清空所有数据（包含账号数据）
 KeychainWrapper.wipeAll()
 ```
 
@@ -129,6 +133,28 @@ let keychain = KeychainWrapper(
     jsonEncoder: encoder,
     jsonDecoder: decoder
 )
+```
+
+## 注意事项
+
+### macOS App Sandbox
+
+KeychainWrapper 内部使用 `kSecAttrGeneric` 作为数据标识键（而非标准的 `kSecAttrAccount`）。在 macOS App Sandbox 环境下，这种方式写入 Keychain 会失败（`SecItemAdd` 返回非 0 错误码，`set` 方法返回 `false`）。
+
+**解决方案**（二选一）：
+
+1. 关闭 App Sandbox：在 Xcode Build Settings 中设置 `ENABLE_APP_SANDBOX = NO`（对 iOS 无影响，iOS 天然沙盒）
+2. 配置 Keychain Sharing entitlement：在 entitlements 文件中声明 `keychain-access-groups`
+
+> 注意：iOS 不受此问题影响，仅影响 macOS 目标和 macOS Catalyst。
+
+### 初始化顺序
+
+使用静态方法前**必须**先调用 `configDefault`，否则会触发 `fatalError`。建议在 App 启动时（如 `application(_:didFinishLaunchingWithOptions:)` 或 SwiftUI 的 init 阶段）完成配置。
+
+```swift
+// AppDelegate 或 LaunchManager 中
+KeychainWrapper.configDefault(with: Bundle.main.bundleIdentifier ?? "com.myapp", accessGroup: nil)
 ```
 
 ## 作者
