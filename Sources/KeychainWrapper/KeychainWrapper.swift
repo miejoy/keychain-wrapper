@@ -452,8 +452,12 @@ public final class KeychainWrapper: Sendable {
     @discardableResult
     public func wipeDatas() -> Bool {
         return DispatchQueue.syncOnKeychainQueue {
+            #if os(macOS)
             var dicQuery = self.makeBaseQuery()
             dicQuery[kSecMatchLimit as String] = kSecMatchLimitAll
+            #else
+            let dicQuery = self.makeBaseQuery()
+            #endif
             let status = SecItemDelete(dicQuery as CFDictionary)
             return (status == errSecSuccess || status == errSecItemNotFound)
         }
@@ -557,8 +561,12 @@ public final class KeychainWrapper: Sendable {
     @discardableResult
     public func wipeAccounts() -> Bool {
         return DispatchQueue.syncOnKeychainQueue {
+            #if os(macOS)
             var dicQuery = self.makeAccountQuery()
             dicQuery[kSecMatchLimit as String] = kSecMatchLimitAll
+            #else
+            let dicQuery = self.makeAccountQuery()
+            #endif
             let status = SecItemDelete(dicQuery as CFDictionary)
             
             return (status == errSecSuccess || status == errSecItemNotFound)
